@@ -1,0 +1,7 @@
+[
+ {"id":"payment-timeout","service_id":"payment","title":"Payment timeout and upstream unavailable","content":"결제 서비스에서 timeout과 HTTP 503이 증가하면 외부 결제사의 응답 시간과 연결 풀 사용량을 확인합니다. 재시도 횟수와 circuit breaker 상태를 확인하고 중복 결제 여부를 확인합니다. 오류율과 p95 지연이 동시에 증가하는지 비교합니다. 이 문서는 점검 절차이며 특정 장애 원인이 확인되었다는 근거는 아닙니다."},
+ {"id":"checkout-dependency","service_id":"checkout","title":"Checkout dependency timeout HTTP 504","content":"주문 서비스는 payment와 inventory에 의존합니다. HTTP 504가 증가하면 같은 시간대에 두 의존 서비스의 오류율과 지연을 확인합니다. trace_id로 동일 요청의 로그를 조회합니다. 시간적 상관관계만으로 원인을 확정하지 않습니다."},
+ {"id":"inventory-errors","service_id":"inventory","title":"Inventory stock reservation upstream unavailable","content":"재고 예약 오류가 증가하면 재고 데이터베이스 잠금과 예약 중복을 확인합니다. 주문 서비스의 호출량을 함께 비교합니다."},
+ {"id":"identity-errors","service_id":"identity","title":"Identity session verification upstream unavailable","content":"세션 검증 실패가 증가하면 인증 저장소 연결과 토큰 만료 시간을 확인합니다. gateway에서 전달한 trace_id를 사용해 요청을 연결합니다."},
+ {"id":"gateway-errors","service_id":"gateway","title":"Gateway upstream unavailable request latency","content":"게이트웨이는 checkout과 identity에 의존합니다. 상위 서비스 응답 상태와 라우팅 설정을 확인하고, 의존 관계를 따라 장애 영향 범위를 조사합니다."}
+]

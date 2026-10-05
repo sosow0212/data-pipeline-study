@@ -1,0 +1,7 @@
+[
+ {"id":"gateway","name":"API Gateway","team":"platform","dependencies":["checkout","identity"]},
+ {"id":"checkout","name":"Checkout API","team":"commerce","dependencies":["payment","inventory"]},
+ {"id":"payment","name":"Payment API","team":"payments","dependencies":[]},
+ {"id":"inventory","name":"Inventory API","team":"commerce","dependencies":[]},
+ {"id":"identity","name":"Identity API","team":"platform","dependencies":[]}
+]

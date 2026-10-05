@@ -1,0 +1,45 @@
+[project]
+name = "ops-lab-dev"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+ "observability-pipeline",
+ "ops-agent",
+]
+
+[tool.uv.sources]
+observability-pipeline = { path = "data-pipeline", editable = true }
+ops-agent = { path = "agent", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "ruff>=0.12,<1", "import-linter>=2,<3"]
+
+[tool.pytest.ini_options]
+testpaths = ["data-pipeline/tests", "agent/tests", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.importlinter]
+root_packages = ["observability_pipeline", "ops_agent"]
+
+[[tool.importlinter.contracts]]
+name = "Agent dependency direction"
+type = "layers"
+layers = ["ops_agent.presentation", "ops_agent.application", "ops_agent.domain"]
+
+[[tool.importlinter.contracts]]
+name = "Agent use cases do not import adapters"
+type = "forbidden"
+source_modules = ["ops_agent.domain", "ops_agent.application"]
+forbidden_modules = ["ops_agent.infrastructure", "ops_agent.presentation"]
+
+[[tool.importlinter.contracts]]
+name = "Pipeline use cases do not import adapters"
+type = "forbidden"
+source_modules = ["observability_pipeline.domain", "observability_pipeline.application"]
+forbidden_modules = ["observability_pipeline.infrastructure", "observability_pipeline.presentation"]

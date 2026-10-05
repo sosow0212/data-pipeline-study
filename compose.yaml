@@ -1,0 +1,232 @@
+name: ops-lab
+
+services:
+  mongodb:
+    image: mongo:8.0.16
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
+    ports: ["127.0.0.1:27027:27017"]
+    volumes: ["mongodb:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.3.1
+    ports: ["127.0.0.1:19092:19092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes: ["kafka:/var/lib/kafka/data"]
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+  kafka-init:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
+    command: ["--bootstrap-server", "kafka:9092", "--create", "--if-not-exists", "--topic", "app.logs.v1", "--partitions", "3", "--replication-factor", "1"]
+
+  core:
+    build: ./core
+    ports: ["127.0.0.1:18090:8080"]
+    environment:
+      GIN_MODE: release
+      MONGO_URI: mongodb://mongodb:27017
+      KAFKA_ADDRESS: kafka:9092
+    depends_on:
+      mongodb: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  objectstore:
+    image: rustfs/rustfs:1.0.0-alpha.81
+    environment:
+      RUSTFS_ACCESS_KEY: ops-lab
+      RUSTFS_SECRET_KEY: ops-lab-secret
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+    ports: ["127.0.0.1:19000:9000", "127.0.0.1:19001:9001"]
+    volumes: ["objectstore:/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+  objectstore-init:
+    image: amazon/aws-cli:2.36.49
+    depends_on:
+      objectstore: {condition: service_healthy}
+    environment:
+      AWS_ACCESS_KEY_ID: ops-lab
+      AWS_SECRET_ACCESS_KEY: ops-lab-secret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://objectstore:9000
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["aws s3api head-bucket --bucket warehouse || aws s3api create-bucket --bucket warehouse"]
+
+  catalog-db:
+    image: postgres:17.5
+    environment:
+      POSTGRES_USER: polaris
+      POSTGRES_PASSWORD: ops-lab-secret
+      POSTGRES_DB: polaris
+    volumes:
+      - catalog-db:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "polaris"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  polaris-init:
+    image: apache/polaris-admin-tool:1.8.0
+    environment: &polaris-db
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://catalog-db:5432/polaris
+      QUARKUS_DATASOURCE_USERNAME: polaris
+      QUARKUS_DATASOURCE_PASSWORD: ops-lab-secret
+      QUARKUS_OTEL_SDK_DISABLED: "true"
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx512m
+    depends_on:
+      catalog-db: {condition: service_healthy}
+    command: ["bootstrap", "-r", "POLARIS", "-c", "POLARIS,root,ops-lab-secret"]
+  polaris:
+    image: apache/polaris:1.8.0
+    environment:
+      <<: *polaris-db
+      POLARIS_REALM_CONTEXT_REALMS: POLARIS
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ops-lab
+      AWS_SECRET_ACCESS_KEY: ops-lab-secret
+    ports: ["127.0.0.1:18191:8181", "127.0.0.1:18192:8182"]
+    depends_on:
+      polaris-init: {condition: service_completed_successfully}
+      objectstore-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8182/q/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+  catalog-init:
+    image: python:3.12-slim
+    volumes: ["./infra/polaris/bootstrap.py:/bootstrap.py:ro"]
+    command: ["python", "/bootstrap.py"]
+    depends_on:
+      polaris: {condition: service_healthy}
+
+  trino:
+    image: trinodb/trino:483
+    ports: ["127.0.0.1:18091:8080"]
+    volumes:
+      - ./infra/trino/catalog:/etc/trino/catalog:ro
+      - ./infra/trino/config.properties:/etc/trino/config.properties:ro
+      - ./infra/trino/jvm.config:/etc/trino/jvm.config:ro
+    depends_on:
+      catalog-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+  spark:
+    build:
+      context: .
+      dockerfile: data-pipeline/Dockerfile
+    profiles: ["jobs"]
+    volumes:
+      - .:/workspace:ro
+      - checkpoints:/checkpoints
+    ports: ["127.0.0.1:14040:4040"]
+    depends_on:
+      catalog-init: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+
+  neo4j:
+    image: neo4j:5.26.12-community
+    ports: ["127.0.0.1:17474:7474", "127.0.0.1:17687:7687"]
+    environment:
+      NEO4J_AUTH: neo4j/ops-lab-password
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes: ["neo4j:/data"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    ports: ["127.0.0.1:18092:8000"]
+    environment:
+      TRINO_HOST: trino
+      TRINO_PORT: 8080
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_PASSWORD: ops-lab-password
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      SEMANTIC_SEARCH: ${SEMANTIC_SEARCH:-false}
+    depends_on:
+      trino: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  frontend:
+    build: ./frontend
+    ports: ["127.0.0.1:13000:3000"]
+    environment:
+      CORE_URL: http://core:8080
+      AGENT_URL: http://agent:8000
+    depends_on:
+      core: {condition: service_healthy}
+      agent: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  mongodb:
+  kafka:
+  objectstore:
+  catalog-db:
+  checkpoints:
+  neo4j:
